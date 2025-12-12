@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import sys
+import textwrap  # <--- Thêm cái này để xử lý thụt đầu dòng
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -61,9 +62,8 @@ def enrich_notes(note_path):
     processed_count = 0
     skipped_count = 0
 
-    # Regex để tìm block metadata cũ ở cuối file
-    # Cấu trúc: <!-- AI_METADATA ... --> (có thể có dòng Hash)
-    metadata_pattern = re.compile(r"\n+<!-- AI_METADATA\n(.*?)\n-->", re.DOTALL)
+    # Regex cập nhật: Chấp nhận khoảng trắng (\s*) trước thẻ comment để an toàn hơn
+    metadata_pattern = re.compile(r"\n+\s*<!-- AI_METADATA\n(.*?)\n\s*-->", re.DOTALL)
 
     for root, dirs, files in os.walk(note_path):
         for file in files:
@@ -110,15 +110,17 @@ def enrich_notes(note_path):
                     ai_response = chain.invoke({"text": user_content})
 
                     # 3. Tạo block Metadata mới (Kèm Hash)
-                    new_metadata = f"""
-<!-- AI_METADATA
-Content-Hash: {current_hash}
-{ai_response.strip()}
--->"""
+                    # Dùng textwrap.dedent để xóa thụt đầu dòng thừa, giữ code đẹp mà output vẫn chuẩn
+                    new_metadata = textwrap.dedent(f"""
+                        <!-- AI_METADATA
+                        Content-Hash: {current_hash}
+                        {ai_response.strip()}
+                        -->""")
 
                     # 4. Ghi đè lại file (Nội dung gốc + Metadata mới)
                     with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(user_content + "\n" + new_metadata)
+                        # Thêm 2 dòng mới cho thoáng, dedent sẽ lo phần format
+                        f.write(user_content + "\n\n" + new_metadata.strip())
 
                     print(f"✅ Đã cập nhật Metadata cho {file}")
                     processed_count += 1
