@@ -1,5 +1,7 @@
 import argparse
+import hashlib
 import os
+import re
 import sys
 
 from langchain_core.output_parsers import StrOutputParser
@@ -13,55 +15,55 @@ DEFAULT_NOTE_PATH = "/home/daniel/Projects/mind_dump/"
 LLM_MODEL = "llama3.2:3b"
 
 
+def calculate_md5(text):
+    """Tính mã băm MD5 của văn bản để kiểm tra thay đổi"""
+    return hashlib.md5(text.strip().encode("utf-8")).hexdigest()
+
+
 def enrich_notes(note_path):
     """
-    Hàm này đi tuần tra các file .md, nhờ AI đọc hiểu và tiêm Metadata (Keywords + Summary) vào cuối file.
-    Trả về: Số lượng file mới được xử lý.
+    Đi tuần tra các file .md, kiểm tra xem nội dung có thay đổi không.
+    Nếu có (hoặc chưa có metadata) -> Gọi AI xử lý lại.
     """
 
-    # 1. Kiểm tra đường dẫn note
     if not os.path.exists(note_path):
         print(f"❌ Đường dẫn không tồn tại: {note_path}")
         return 0
 
-    # 2. Khởi tạo kết nối với Ollama
     print(f"🔌 Đang kết nối với não bộ Ollama ({LLM_MODEL})...")
     try:
         llm = ChatOllama(model=LLM_MODEL, temperature=0)
     except Exception as e:
         print(f"❌ Không kết nối được Ollama: {e}")
-        print("💡 Gợi ý: Mày đã chạy 'ollama serve' hoặc 'systemctl start ollama' chưa?")
         return 0
 
-    # 3. Tạo Prompt để ép AI sinh Metadata chuẩn format
+    # Prompt mới: Yêu cầu không được bịa Hash, Hash do Python tự tính
     template = """
-    Bạn là một trợ lý AI quản lý kiến thức (Second Brain Librarian).
-    Nhiệm vụ: Đọc ghi chú thô sơ bên dưới và tạo Metadata để giúp công cụ tìm kiếm (RAG) hoạt động tốt hơn.
+    Bạn là một trợ lý AI quản lý kiến thức.
+    Nhiệm vụ: Đọc ghi chú và tạo Metadata chuẩn SEO cho RAG.
     
-    YÊU CẦU BẮT BUỘC:
-    1. Tóm tắt nội dung chính trong đúng 1 câu tiếng Việt ngắn gọn.
-    2. Liệt kê 10-15 từ khóa (Keywords) liên quan. Bao gồm:
-       - Từ đồng nghĩa (ví dụ: "chaos" -> "hỗn loạn", "messy").
-       - Thuật ngữ chuyên ngành (nếu có, cả Anh lẫn Việt).
-       - Các từ khóa mà người dùng có thể sẽ search để tìm lại note này.
+    YÊU CẦU:
+    1. Tóm tắt 1 câu tiếng Việt.
+    2. Liệt kê 10-15 keywords (Anh/Việt/Synonyms).
     
-    FORMAT OUTPUT (Trả về y hệt khung dưới, không thêm lời dẫn):
-    <!-- AI_METADATA
-    Summary: [Nội dung tóm tắt]
-    Keywords: [Keyword1, Keyword2, Keyword3, ...]
-    -->
+    FORMAT OUTPUT (Bắt buộc):
+    Summary: [Tóm tắt]
+    Keywords: [Keyword list]
     
-    Nội dung ghi chú cần xử lý:
+    Nội dung:
     {text}
     """
 
     prompt = ChatPromptTemplate.from_template(template)
     chain = prompt | llm | StrOutputParser()
 
-    # 4. Quét thư mục và xử lý từng file
-    print(f"🕵️  Đang đi tuần tra khu vực: {note_path}")
+    print(f"🕵️  Đang rà soát thay đổi tại: {note_path}")
     processed_count = 0
     skipped_count = 0
+
+    # Regex để tìm block metadata cũ ở cuối file
+    # Cấu trúc: <!-- AI_METADATA ... --> (có thể có dòng Hash)
+    metadata_pattern = re.compile(r"\n+<!-- AI_METADATA\n(.*?)\n-->", re.DOTALL)
 
     for root, dirs, files in os.walk(note_path):
         for file in files:
@@ -70,49 +72,67 @@ def enrich_notes(note_path):
 
                 try:
                     with open(file_path, encoding="utf-8") as f:
-                        content = f.read()
+                        full_content = f.read()
 
-                    # Bỏ qua file quá ngắn hoặc file rỗng
-                    if len(content.strip()) < 50:
+                    # 1. Tách nội dung gốc và metadata cũ
+                    match = metadata_pattern.search(full_content)
+
+                    if match:
+                        # Đã có metadata -> Tách ra
+                        user_content = full_content[: match.start()].strip()
+                        old_metadata_block = match.group(1)
+
+                        # Tìm hash cũ trong block metadata
+                        hash_match = re.search(r"Content-Hash: ([a-f0-9]+)", old_metadata_block)
+                        old_hash = hash_match.group(1) if hash_match else "old"
+
+                        # Tính hash hiện tại
+                        current_hash = calculate_md5(user_content)
+
+                        # SO SÁNH
+                        if current_hash == old_hash:
+                            # Nội dung chưa đổi -> Bỏ qua
+                            skipped_count += 1
+                            continue
+                        else:
+                            print(f"📝 Phát hiện thay đổi trong: {file}. Re-indexing...")
+                    else:
+                        # Chưa có metadata
+                        user_content = full_content.strip()
+                        current_hash = calculate_md5(user_content)
+                        print(f"🔨 File mới: {file}. Đang xử lý...")
+
+                    # Bỏ qua file quá ngắn
+                    if len(user_content) < 10:
                         continue
 
-                    # Bỏ qua file đã được xử lý (đã có tag Metadata)
-                    if "<!-- AI_METADATA" in content:
-                        skipped_count += 1
-                        continue
+                    # 2. Gọi AI xử lý (Dùng user_content sạch, không dính metadata cũ)
+                    ai_response = chain.invoke({"text": user_content})
 
-                    print(f"🔨 Đang bơm thuốc cho file: {file}...")
+                    # 3. Tạo block Metadata mới (Kèm Hash)
+                    new_metadata = f"""
+<!-- AI_METADATA
+Content-Hash: {current_hash}
+{ai_response.strip()}
+-->"""
 
-                    # Gọi AI xử lý
-                    metadata = chain.invoke({"text": content})
+                    # 4. Ghi đè lại file (Nội dung gốc + Metadata mới)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(user_content + "\n" + new_metadata)
 
-                    # Ghi nối (Append) vào cuối file
-                    with open(file_path, "a", encoding="utf-8") as f:
-                        # Thêm 2 dòng trống cho thoáng
-                        f.write("\n\n" + metadata.strip())
-
-                    print(f"✅ Đã xong: {file}")
+                    print(f"✅ Đã cập nhật Metadata cho {file}")
                     processed_count += 1
 
                 except Exception as e:
-                    print(f"⚠️ Lỗi khi xử lý file {file}: {e}")
+                    print(f"⚠️ Lỗi file {file}: {e}")
 
-    # 5. Báo cáo kết quả
     print("-" * 30)
-    print("🎉 Hoàn tất nhiệm vụ!")
-    print(f"📊 Đã xử lý mới: {processed_count} file")
-    print(f"⏩ Đã bỏ qua (làm rồi): {skipped_count} file")
-
+    print(f"🎉 Hoàn tất! Update: {processed_count} | Skip: {skipped_count}")
     return processed_count
 
 
 if __name__ == "__main__":
-    # Setup tham số dòng lệnh cho chuyên nghiệp
-    parser = argparse.ArgumentParser(description="Tool bơm Metadata cho ghi chú bằng AI")
-    parser.add_argument(
-        "--path", type=str, default=DEFAULT_NOTE_PATH, help="Đường dẫn folder note (mặc định lấy trong code)"
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", type=str, default=DEFAULT_NOTE_PATH)
     args = parser.parse_args()
-
     enrich_notes(args.path)
