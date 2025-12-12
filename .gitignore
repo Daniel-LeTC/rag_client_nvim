@@ -5,6 +5,16 @@ build/
 dist/
 wheels/
 *.egg-info
+chroma_db/
+*.pyc
 
-# Virtual environments
+# Bỏ qua môi trường ảo (nếu có)
+.venv/
+venv/
 .venv
+
+# Bỏ qua các file hệ thống
+.DS_Store
+
+# Bỏ qua file cấu hình riêng tư (nếu sau này mày có API Key)
+.env
