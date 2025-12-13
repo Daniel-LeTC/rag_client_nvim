@@ -76,4 +76,4 @@ Chạy trong Neovim (lưu ý, phải có config nvim và file rag_client.lua):
 
 :Enrich: Chạy tool bơm Metadata thủ công.
 
-Created by Polymath Bro Architecture.
+:MathPreview: Mở trình duyệt để xem file Markdown đã render (xem ảnh, latex và code block)
