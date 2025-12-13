@@ -34,11 +34,11 @@ Check trạng thái: systemctl status ollama
 
 Chúng ta cần 2 model: một cái để Nghĩ (LLM) và một cái để Nhìn (Embedding).
 
-A. LLM Model: Llama 3.2 3B
+A. LLM Model: Qwen 2.5 7B
 
 Lý do: Nhỏ, nhẹ, nhanh, context window lớn (128k), chạy mượt trên Laptop GPU 6GB mà không làm nóng máy.
 
-ollama pull llama3.2:3b
+ollama pull qwen2.5:7b
 
 
 B. Embedding Model: mxbai-embed-large
@@ -70,7 +70,7 @@ uv run smart_run.py
 uv run smart_run.py "ghi chú hỗn loạn là gì?"
 
 
-Chạy trong Neovim:
+Chạy trong Neovim (lưu ý, phải có config nvim và file rag_client.lua):
 
 :Ask <câu hỏi>: Mở cửa sổ chat Floating Window.
 
