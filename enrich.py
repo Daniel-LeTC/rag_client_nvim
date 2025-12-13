@@ -4,8 +4,6 @@ import os
 import re
 
 from langchain_chroma import Chroma
-
-# --- FIX IMPORT Ở ĐÂY ---
 from langchain_core.documents import Document
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -13,9 +11,7 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 # Import Config
 from config import COLLECTION_NAME, EMBEDDING_MODEL_NAME, MODEL_NAME, NOTES_DIRECTORY, VECTOR_DB_PATH
 
-# Pattern nhận diện metadata cũ
 METADATA_PATTERN = re.compile(r"<!--\s*AI_METADATA(.*?)-->", re.DOTALL)
-# Pattern nhận diện file Daily Note (VD: 20251213.md)
 DAILY_NOTE_PATTERN = re.compile(r"^\d{8}\.md$")
 
 
@@ -36,22 +32,19 @@ def extract_hash_from_metadata(metadata_text):
 
 
 def generate_ai_metadata(content, file_name):
-    """
-    Sinh Metadata thông minh.
-    """
     llm = ChatOllama(model=MODEL_NAME, temperature=0.1)
     prompt = f"""
-    You are a Personal Knowledge Assistant.
-    Analyze this note ({file_name}) and provide:
-    1. A Vietnamese Summary (2-3 sentences).
-    2. Keywords (English/Vietnamese) for search optimization.
+    You are a Knowledge Librarian.
+    Analyze this note ({file_name}) and extract:
+    1. A short Summary (Vietnamese).
+    2. Top 5 specific Keywords (English/Vietnamese).
 
     Content snippet:
     {content[:3000]}
     
-    Output strictly in this format:
-    Summary: <text>
-    Keywords: <k1, k2, k3>
+    Output format:
+    Summary: ...
+    Keywords: ...
     """
     try:
         response = llm.invoke(prompt)
@@ -73,31 +66,62 @@ Content-Hash: {file_hash}
         f.write(clean_content + "\n\n" + metadata_block)
 
 
-# --- CHUNKING STRATEGY ---
+# --- CHUNKING STRATEGY (NÂNG CẤP) ---
 
 
 def chunk_daily_note(content, source):
-    """
-    Chiến thuật cho Daily Dump (Systematic Chaos):
-    Cắt theo Heading (##) để tách biệt các topic rời rạc trong ngày.
-    """
+    # B1: Cắt theo Heading trước (Lấy Context Topic)
     headers_to_split_on = [("#", "Header 1"), ("##", "Topic"), ("###", "Sub-topic")]
-
     markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+
+    # Cắt sơ bộ
+    initial_docs = markdown_splitter.split_text(content)
+
+    # Xử lý trường hợp file "trần chuồng" (Không có Header nào)
+    if not initial_docs:
+        initial_docs = [Document(page_content=content, metadata={})]
+
+    final_docs = []
+
+    # B2: Cắt mịn (Recursive) nếu chunk còn quá to
+    recursive_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,  # Kích thước vừa phải để từ khóa cô đọng
+        chunk_overlap=100,
+        separators=["\n- ", "\n", " ", ""],  # Ưu tiên cắt ở gạch đầu dòng
+    )
+
     base_metadata = {"source": source, "type": "daily_log"}
 
-    docs = markdown_splitter.split_text(content)
+    for doc in initial_docs:
+        # Lấy Topic từ Header (nếu có)
+        topic = doc.metadata.get("Topic", "General Log")
+        sub = doc.metadata.get("Sub-topic", "")
+        file_name = os.path.basename(source)
 
-    for doc in docs:
-        doc.metadata.update(base_metadata)
+        # Tạo Context String để Inject
+        context_str = f"DAILY LOG: {file_name}\nTOPIC: {topic}"
+        if sub:
+            context_str += f" > {sub}"
 
-    return docs
+        # Nếu chunk này dài quá 800 ký tự -> Cắt nhỏ tiếp
+        if len(doc.page_content) > 1000:
+            sub_chunks = recursive_splitter.create_documents([doc.page_content])
+            for sub_chunk in sub_chunks:
+                # Inject Context vào từng mảnh nhỏ
+                sub_chunk.page_content = f"{context_str}\n---\n{sub_chunk.page_content}"
+                sub_chunk.metadata.update(doc.metadata)  # Giữ lại metadata heading
+                sub_chunk.metadata.update(base_metadata)
+                final_docs.append(sub_chunk)
+        else:
+            # Nếu chunk nhỏ gọn rồi thì Inject luôn
+            doc.page_content = f"{context_str}\n---\n{doc.page_content}"
+            doc.metadata.update(base_metadata)
+            final_docs.append(doc)
+
+    return final_docs
 
 
 def chunk_topic_note(content, source):
-    """
-    Chiến thuật cho Deep Work Note.
-    """
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=200, separators=["\n## ", "\n### ", "\n", " "]
     )
@@ -140,24 +164,38 @@ def process_notes():
 
                     print(f"🔄 Processing: {file}...")
 
-                    # 1. Sinh Metadata & Update File Gốc
+                    # 1. Sinh Metadata
                     ai_meta = generate_ai_metadata(clean_content, file)
                     update_file_with_metadata(file_path, content, ai_meta, current_hash)
 
-                    # 2. CHUNKING
+                    # 2. CHUNKING (Gọi hàm đã update)
                     chunks = []
+                    is_daily = False
+
                     if DAILY_NOTE_PATTERN.match(file):
-                        print("   ↳ Daily Note Detected -> Header Splitting")
                         chunks = chunk_daily_note(clean_content, file_path)
+                        is_daily = True
                     else:
-                        print("   ↳ Topic Note Detected -> Recursive Splitting")
                         chunks = chunk_topic_note(clean_content, file_path)
+                        is_daily = False
 
-                    # 3. Inject AI Keywords
-                    for chunk in chunks:
-                        chunk.metadata["ai_summary"] = ai_meta
+                    # 3. Context Injection (Cho luồng Topic)
+                    # (Luồng Daily đã inject bên trong hàm chunk_daily_note rồi)
+                    file_name_only = os.path.basename(file_path)
+                    keywords = "General"
+                    if "Keywords:" in ai_meta:
+                        try:
+                            keywords = ai_meta.split("Keywords:")[1].strip().split("\n")[0]
+                        except:
+                            pass
 
-                    # 4. Đẩy vào Vector DB
+                    if not is_daily:
+                        for chunk in chunks:
+                            chunk.metadata["original_content"] = chunk.page_content
+                            chunk.metadata["ai_summary"] = ai_meta
+                            chunk.page_content = f"SOURCE DOCUMENT: {file_name_only}\nCONTEXT KEYWORDS: {keywords}\n---\n{chunk.page_content}"
+
+                    # 4. Đẩy vào DB
                     if chunks:
                         vectorstore.add_documents(chunks)
                         updated += 1

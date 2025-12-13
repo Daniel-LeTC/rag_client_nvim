@@ -19,7 +19,6 @@ def format_docs(docs):
 
 
 def main():
-    # 1. Khởi tạo
     if not os.path.exists(VECTOR_DB_PATH):
         print(f"❌ Không tìm thấy Database tại {VECTOR_DB_PATH}!")
         return
@@ -35,18 +34,18 @@ def main():
         print(f"💀 Lỗi load DB: {e}")
         return
 
-    # 2. Setup Retriever & Reranker
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 20})
+    # Lấy nhiều hơn để rerank (k=30)
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 30})
 
     print("🧠 Đang tải Reranker...")
     try:
-        reranker = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-base")
-        print("✅ Reranker đã sẵn sàng.")
+        model_kwargs = {"device": "cpu"}
+        reranker = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-base", model_kwargs=model_kwargs)
+        print("✅ Reranker đã sẵn sàng (CPU Mode).")
     except Exception as e:
-        print(f"⚠️  Không load được Reranker: {e}. Dùng vector search thuần.")
+        print(f"⚠️  Không load được Reranker: {e}")
         reranker = None
 
-    # 3. Setup LLM
     print(f"🤖 Đang kích hoạt não bộ: {MODEL_NAME}...")
     llm = ChatOllama(model=MODEL_NAME, temperature=0, keep_alive="1h")
     prompt = ChatPromptTemplate.from_template(POLY_SYSTEM_PROMPT)
@@ -69,14 +68,35 @@ def main():
             # --- RAG PIPELINE ---
             retrieved_docs = retriever.invoke(query)
 
-            final_docs = retrieved_docs
+            final_docs = []
             if reranker:
                 try:
                     pairs = [[query, doc.page_content] for doc in retrieved_docs]
                     scores = reranker.score(pairs)
+
                     scored_docs = sorted(zip(retrieved_docs, scores), key=lambda x: x[1], reverse=True)
-                    final_docs = [doc for doc, score in scored_docs[:5]]
-                except Exception:
+
+                    print("   📊 Reranker Debug (Top 5):")
+
+                    # --- NỚI LỎNG NGƯỠNG LỌC ---
+                    # Hạ xuống -10.0 để hầu như không lọc gì cả, trừ khi quá tệ
+                    THRESHOLD = -10.0
+
+                    for i, (doc, score) in enumerate(scored_docs[:7]):
+                        src = os.path.basename(doc.metadata.get("source", "Unknown"))
+                        print(f"      [{i + 1}] Score: {score:.4f} | Source: {src}")
+
+                        if score > THRESHOLD:
+                            final_docs.append(doc)
+                        else:
+                            print(f"      ❌ [Loại bỏ do thấp hơn {THRESHOLD}]")
+
+                    if not final_docs and scored_docs:
+                        print("      ⚠️ Lấy tạm thằng đầu tiên dù điểm thấp.")
+                        final_docs = [scored_docs[0][0]]
+
+                except Exception as e:
+                    print(f"Lỗi Rerank: {e}")
                     final_docs = retrieved_docs[:5]
             else:
                 final_docs = retrieved_docs[:5]
@@ -84,7 +104,7 @@ def main():
             if not final_docs:
                 print("\n🤖 Polymath Bot:")
                 print("-" * 30)
-                print("Tao lục tung thùng rác rồi mà không thấy thông tin gì liên quan. Mày đã note chưa?")
+                print("Tao chịu. Không tìm thấy thông tin nào khớp cả.")
                 print("-" * 30)
                 continue
 
@@ -94,13 +114,12 @@ def main():
             print("\n🤖 Polymath Bot:")
             print("-" * 30)
 
-            # Stream câu trả lời
             for chunk in chain.stream({"context": context_text, "question": query}):
                 print(chunk, end="", flush=True)
 
             print("\n" + "-" * 30)
 
-            # --- SHOW SOURCES (Minh bạch hóa thông tin) ---
+            # Show Sources
             print("📚 Nguồn dữ liệu (Evidence):")
             seen_sources = set()
             for i, doc in enumerate(final_docs):
