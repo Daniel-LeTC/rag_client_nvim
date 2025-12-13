@@ -1,196 +1,121 @@
-import argparse
 import os
 import sys
+import warnings
 
-import torch
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Import Reranker Libraries
-from sentence_transformers import CrossEncoder
+from config import COLLECTION_NAME, EMBEDDING_MODEL_NAME, MODEL_NAME, POLY_SYSTEM_PROMPT, VECTOR_DB_PATH
 
-# --- CONFIG ---
-NOTE_PATH = "/home/daniel/Projects/mind_dump/"
-DB_PATH = "./chroma_db"
-LLM_MODEL = "llama3:8b"
-EMBED_MODEL = "mxbai-embed-large"
-RERANKER_MODEL = "cross-encoder/ms-marco-TinyBERT-L-2"
+warnings.filterwarnings("ignore")
 
 
-def load_and_index(force_rebuild=False):
-    """Đọc note, băm nhỏ và nhét vào Vector DB"""
-    if os.path.exists(DB_PATH) and not force_rebuild:
-        print(f"⚡ Đã tìm thấy DB tại {DB_PATH}. Load lên xài luôn...")
-        return Chroma(persist_directory=DB_PATH, embedding_function=OllamaEmbeddings(model=EMBED_MODEL))
-
-    print("♻️  Đang quét note và tạo index mới (chờ tí nha bro)...")
-
-    if not os.path.exists(NOTE_PATH):
-        print(f"❌ Đường dẫn {NOTE_PATH} không tồn tại!")
-        sys.exit(1)
-
-    loader = DirectoryLoader(NOTE_PATH, glob="**/*.md", loader_cls=TextLoader)
-    docs = loader.load()
-
-    if not docs:
-        print("❌ Không tìm thấy file .md nào để học cả!")
-        sys.exit(1)
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,  # Kích thước mỗi miếng
-        chunk_overlap=100,  # Gối đầu nhau để giữ ngữ cảnh
-        add_start_index=True,
-        separators=["\n## ", "\n### ", "\n- ", "\n", " "],
-    )
-    splits = text_splitter.split_documents(docs)
-
-    vectorstore = Chroma.from_documents(
-        documents=splits, embedding=OllamaEmbeddings(model=EMBED_MODEL), persist_directory=DB_PATH
-    )
-    print(f"✅ Đã index xong {len(splits)} chunks vào Database!")
-    return vectorstore
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
 
-def chat(query, vectorstore, reranker):  # <-- THÊM reranker vào tham số
-    """Hỏi xoáy đáp xoay - Version: Sniper Elite"""
+def main():
+    # 1. Khởi tạo
+    if not os.path.exists(VECTOR_DB_PATH):
+        print(f"❌ Không tìm thấy Database tại {VECTOR_DB_PATH}!")
+        return
 
-    # 1. Quét rộng (Retriever - Hút bụi)
-    retriever = vectorstore.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 15},  # Lấy 15 chunks để đảm bảo không bỏ sót cái nào
-    )
-
-    print(f"\n🔍 Đang bới thùng rác tìm: '{query}'...")
+    print(f"⚡ Đã tìm thấy DB tại {VECTOR_DB_PATH}. Load hàng nóng...")
 
     try:
-        raw_docs = retriever.invoke(query)
-    except Exception:
-        raw_docs = []
+        embedding_function = OllamaEmbeddings(model=EMBEDDING_MODEL_NAME)
+        vectorstore = Chroma(
+            persist_directory=VECTOR_DB_PATH, embedding_function=embedding_function, collection_name=COLLECTION_NAME
+        )
+    except Exception as e:
+        print(f"💀 Lỗi load DB: {e}")
+        return
 
-    if not raw_docs:
-        print("❌ Retriever báo: Không tìm thấy bất kỳ đoạn nào khớp!")
-        retrieved_docs = []
-    else:
-        # --- FIX 2: Lọc Metadata VÔ DỤNG ---
-        filtered_docs = [
-            doc
-            for doc in raw_docs
-            if "AI_METADATA" not in doc.page_content  # Lọc các đoạn chỉ chứa metadata vô dụng
-        ]
+    # 2. Setup Retriever & Reranker
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 20})
 
-        if not filtered_docs:
-            print("❌ Lọc Metadata: Không còn nội dung hữu ích nào để rerank!")
-            retrieved_docs = []
-        else:
-            # 2. Rerank (Lọc cát đãi vàng)
+    print("🧠 Đang tải Reranker...")
+    try:
+        reranker = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-base")
+        print("✅ Reranker đã sẵn sàng.")
+    except Exception as e:
+        print(f"⚠️  Không load được Reranker: {e}. Dùng vector search thuần.")
+        reranker = None
 
-            # Tạo cặp [query, doc.page_content]
-            sentence_pairs = [[query, doc.page_content] for doc in filtered_docs]
+    # 3. Setup LLM
+    print(f"🤖 Đang kích hoạt não bộ: {MODEL_NAME}...")
+    llm = ChatOllama(model=MODEL_NAME, temperature=0, keep_alive="1h")
+    prompt = ChatPromptTemplate.from_template(POLY_SYSTEM_PROMPT)
 
-            # Chấm điểm
-            scores = reranker.predict(sentence_pairs)
+    print("\n" + "=" * 40)
+    print("💬 POLYMATH BRO IS ONLINE (Gõ 'q' để té)")
+    print("=" * 40)
 
-            # Ghép điểm vào doc và sắp xếp
-            scored_docs = sorted(
-                [(score, doc) for score, doc in zip(scores, filtered_docs)], key=lambda x: x[0], reverse=True
-            )
+    while True:
+        try:
+            query = input("\nMày: ").strip()
+            if query.lower() in ["q", "quit", "exit"]:
+                print("👋 Bye bro.")
+                break
+            if not query:
+                continue
 
-            # 3. Lấy TOP 5 CHẤT LƯỢNG NHẤT (Output cho LLM)
-            # Chỉ lấy 5 cái có điểm Reranker cao nhất
-            retrieved_docs = [doc for score, doc in scored_docs[:5]]
+            print(f"\n🔍 Đang bới thùng rác tìm: '{query}'...")
 
-    if not retrieved_docs:
-        # Nếu đã qua Reranker mà vẫn không có gì, thì báo lỗi.
-        print("❌ Reranker/Filter loại hết vì không có đoạn nào liên quan (hoặc điểm quá thấp)!")
+            # --- RAG PIPELINE ---
+            retrieved_docs = retriever.invoke(query)
 
-    # 4. Setup LLM
-    llm = ChatOllama(model=LLM_MODEL, temperature=0.1)
+            final_docs = retrieved_docs
+            if reranker:
+                try:
+                    pairs = [[query, doc.page_content] for doc in retrieved_docs]
+                    scores = reranker.score(pairs)
+                    scored_docs = sorted(zip(retrieved_docs, scores), key=lambda x: x[1], reverse=True)
+                    final_docs = [doc for doc, score in scored_docs[:5]]
+                except Exception:
+                    final_docs = retrieved_docs[:5]
+            else:
+                final_docs = retrieved_docs[:5]
 
-    # 5. PROMPT: Giữ nguyên prompt V3 đã sửa
-    template = """
-    Mày là Trợ lý Second Brain thông minh. Mày phải trả lời chính xác, mạch lạc.
-    
-    QUY TẮC BẤT KHẢ XÂM PHẠM:
-    1. Bắt buộc dùng TIẾNG VIỆT để trả lời.
-    2. CHỈ sử dụng các thông tin nằm trong phần "Context" bên dưới.
-    3. Trả lời bằng cách TỔNG HỢP và DIỄN GIẢI lại nội dung.
-    4. Trả lời dưới dạng GẠCH ĐẦU DÒNG.
-    5. Nếu Context không có bất kỳ thông tin nào liên quan -> Trả lời ngắn gọn: "Thông tin này chưa được ghi lại trong các note của mày."
+            if not final_docs:
+                print("\n🤖 Polymath Bot:")
+                print("-" * 30)
+                print("Tao lục tung thùng rác rồi mà không thấy thông tin gì liên quan. Mày đã note chưa?")
+                print("-" * 30)
+                continue
 
-    Context:
-    {context}
-    
-    Câu hỏi: {question}
-    
-    Trả lời:
-    """
-    prompt = ChatPromptTemplate.from_template(template)
+            context_text = format_docs(final_docs)
+            chain = prompt | llm | StrOutputParser()
 
-    # 6. Chain
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+            print("\n🤖 Polymath Bot:")
+            print("-" * 30)
 
-    rag_chain = (
-        {"context": lambda x: format_docs(retrieved_docs), "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+            # Stream câu trả lời
+            for chunk in chain.stream({"context": context_text, "question": query}):
+                print(chunk, end="", flush=True)
 
-    # 7. Run & Print Answer
-    print(f"\n🤖 Polymath Bot ({LLM_MODEL}):")
-    print("-" * 30)
+            print("\n" + "-" * 30)
 
-    for chunk in rag_chain.stream(query):
-        print(chunk, end="", flush=True)
-    print("\n" + "-" * 30)
+            # --- SHOW SOURCES (Minh bạch hóa thông tin) ---
+            print("📚 Nguồn dữ liệu (Evidence):")
+            seen_sources = set()
+            for i, doc in enumerate(final_docs):
+                source = os.path.basename(doc.metadata.get("source", "Unknown"))
+                if source not in seen_sources:
+                    print(f"   [{i + 1}] {source}")
+                    seen_sources.add(source)
+            print("-" * 30)
 
-    # --- IN NGUỒN (CITATIONS) ---
-    print("\n📄 NGUỒN DỮ LIỆU GỐC (Đã Rerank):")
-    if retrieved_docs:
-        for i, doc in enumerate(retrieved_docs):
-            source = doc.metadata.get("source", "Unknown")
-            snippet = doc.page_content.replace("\n", " ")[:100]
-            filename = os.path.basename(source)
-            print(f"[{i + 1}] ({filename}) ...{snippet}...")
-    else:
-        print("(Không tìm thấy nguồn nào khớp)")
+        except KeyboardInterrupt:
+            print("\n👋 Bye!")
+            break
+        except Exception as e:
+            print(f"\n❌ Lỗi: {e}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Chat với đống rác của mày")
-    parser.add_argument("query", type=str, nargs="?", help="Câu hỏi")
-    parser.add_argument("--rebuild", action="store_true", help="Xóa DB cũ, index lại từ đầu")
-
-    args = parser.parse_args()
-
-    # Load DB
-    vectorstore = load_and_index(force_rebuild=args.rebuild)
-
-    # --- FIX 1: Khởi tạo Reranker 1 LẦN duy nhất ---
-    print("🧠 Đang tải Reranker (chỉ 1 lần)...")
-    try:
-        # Nếu model đã tải về, nó sẽ khởi tạo rất nhanh
-        reranker = CrossEncoder(RERANKER_MODEL)
-        print("✅ Reranker đã sẵn sàng.")
-    except Exception as e:
-        print(f"❌ Lỗi tải Reranker: {e}. Vui lòng kiểm tra uv add sentence-transformers torch.")
-        sys.exit(1)
-
-    # Chat logic
-    if args.query:
-        chat(args.query, vectorstore, reranker)  # <-- THÊM reranker vào lệnh gọi
-    else:
-        while True:
-            try:
-                user_input = input("\nMày (gõ 'q' để té): ")
-                if user_input.lower() in ["q", "exit", "quit"]:
-                    break
-                chat(user_input, vectorstore, reranker)  # <-- THÊM reranker vào lệnh gọi
-            except KeyboardInterrupt:
-                break
+    main()

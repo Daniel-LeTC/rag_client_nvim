@@ -1,94 +1,109 @@
-import argparse
 import os
 import subprocess
 import sys
+import time
+from pathlib import Path
 
-# Import hàm enrich và đường dẫn note từ file enrich.py
-try:
-    from enrich import DEFAULT_NOTE_PATH, enrich_notes
-except ImportError:
-    print("❌ Lỗi: Không tìm thấy file 'enrich.py'. Đảm bảo mày đang ở đúng thư mục project!")
-    sys.exit(1)
+# --- CẤU HÌNH ĐƯỜNG DẪN TUYỆT ĐỐI ---
+# Lấy thư mục chứa file smart_run.py này làm gốc
+BASE_DIR = Path(__file__).parent.resolve()
+
+# Đường dẫn tới các script con (nằm cùng thư mục)
+ENRICH_SCRIPT = BASE_DIR / "enrich.py"
+MAIN_SCRIPT = BASE_DIR / "main.py"
+
+# Lấy đường dẫn notes từ biến môi trường (nếu có), không thì dùng config mặc định
+# Lưu ý: Script này chạy độc lập, nhưng ta có thể import config nếu thích.
+# Ở đây ta hardcode nhẹ để check folder notes cho Git
+NOTES_DIR = os.getenv("NOTES_DIR", "/home/daniel/Projects/mind_dump/")
 
 
-def sync_to_github(repo_path):
-    """
-    Hàm này đóng vai Shipper, đẩy hàng lên GitHub
-    """
-    print(f"\n🚀 Đang đồng bộ hóa kho {repo_path} lên GitHub...")
+def print_step(step, msg):
+    print(f"\n{'=' * 50}")
+    print(f"🚀 [BƯỚC {step}] {msg}")
+    print(f"{'=' * 50}")
 
-    # Kiểm tra xem có folder .git không
-    if not os.path.exists(os.path.join(repo_path, ".git")):
-        print("⚠️  Kho note chưa có Git (git init). Bỏ qua vụ push.")
-        return
 
+def run_command(command, description):
+    """Chạy lệnh shell và in màu mè"""
+    print(f"▶️  Thực thi: {description}...")
     try:
-        # 1. Git Add (Gom hàng)
-        subprocess.run(["git", "add", "."], cwd=repo_path, check=True)
+        # Sử dụng sys.executable để đảm bảo dùng đúng python của venv hiện tại
+        if command[0] == "python":
+            command[0] = sys.executable
 
-        # 2. Git Commit (Đóng gói)
-        # check=False vì nếu không có gì thay đổi git commit sẽ exit code 1 -> kệ nó
-        commit_msg = "🤖 AI Auto-Enrich: Bơm metadata và cập nhật note"
-        result = subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_path, capture_output=True)
+        result = subprocess.run(command, cwd=BASE_DIR)
 
         if result.returncode != 0:
-            print("zzz Không có gì thay đổi để commit.")
-            return
+            print(f"❌ Lỗi khi chạy {description}. Mã lỗi: {result.returncode}")
+            return False
+        return True
+    except FileNotFoundError:
+        print(f"❌ Không tìm thấy file hoặc lệnh. Kiểm tra lại đường dẫn: {command}")
+        return False
+    except KeyboardInterrupt:
+        print("\n🛑 Đã dừng thủ công.")
+        return False
 
-        # 3. Git Push (Gửi hàng)
-        print("☁️  Đang đẩy lên mây (Pushing)...")
-        subprocess.run(["git", "push"], cwd=repo_path, check=True)
-        print("✅ Done! Dữ liệu đã an toàn trên GitHub.")
 
+def git_backup():
+    """Tự động commit và push notes lên Git"""
+    if not os.path.exists(NOTES_DIR):
+        print(f"⚠️  Folder {NOTES_DIR} không tồn tại. Bỏ qua backup Git.")
+        return
+
+    print_step("2/3", "Backup não bộ lên Cloud (Git)...")
+
+    # Check xem có thay đổi gì không
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=NOTES_DIR, capture_output=True, text=True)
+
+    if not status.stdout.strip():
+        print("zzz Không có gì thay đổi để commit. Ngủ tiếp.")
+        return
+
+    print("🔥 Phát hiện thay đổi note. Đang backup...")
+    try:
+        subprocess.run(["git", "add", "."], cwd=NOTES_DIR, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"Brain Dump: {time.strftime('%Y-%m-%d %H:%M')}"], cwd=NOTES_DIR, check=True
+        )
+        # Push (Uncomment dòng dưới nếu mày đã setup remote)
+        # subprocess.run(["git", "push"], cwd=NOTES_DIR, check=True)
+        print("✅ Backup hoàn tất!")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Lỗi Git: {e}")
-    except Exception as e:
-        print(f"❌ Lỗi lạ: {e}")
+        print(f"⚠️  Lỗi Git: {e}")
 
 
 def main():
     print("🤖 SMART RUNNER: Polymath Second Brain")
-    print("=" * 40)
+    print(f"📂 Working Dir: {BASE_DIR}")
 
-    # BƯỚC 1: Chạy Enrich
-    print(">>> [1/3] Checking & Enriching Notes...")
-    try:
-        new_files_count = enrich_notes(DEFAULT_NOTE_PATH)
-    except Exception as e:
-        print(f"⚠️  Lỗi khi chạy enrich: {e}")
-        new_files_count = 0
+    # 1. Kiểm tra file tồn tại
+    if not ENRICH_SCRIPT.exists():
+        print(f"❌ CHẾT TOANG: Không tìm thấy '{ENRICH_SCRIPT.name}'")
+        print("👉 Mày chưa copy file enrich.py vào thư mục này hả?")
+        return
+    if not MAIN_SCRIPT.exists():
+        print(f"❌ CHẾT TOANG: Không tìm thấy '{MAIN_SCRIPT.name}'")
+        return
 
-    # BƯỚC 2: Auto Sync Git (Nếu có file mới hoặc file bị sửa đổi bởi AI)
-    # Kể cả enrich trả về 0 file mới, có thể mày đã sửa tay nội dung note, nên cứ thử sync cho chắc
-    print("\n>>> [2/3] Git Backup Protocol...")
-    sync_to_github(DEFAULT_NOTE_PATH)
+    # 2. Chạy Enrich (Build Data)
+    print_step("1/3", "Nạp dữ liệu (Enriching)...")
+    if not run_command(["python", str(ENRICH_SCRIPT)], "Enrich Data"):
+        print("⚠️  Enrich gặp lỗi. Có muốn chạy tiếp RAG không? (y/n)")
+        if input("> ").lower() != "y":
+            return
 
-    # BƯỚC 3: Quyết định chạy RAG
-    print("\n>>> [3/3] Launching RAG Chatbot...")
+    # 3. Chạy Git Backup (Optional)
+    git_backup()
 
-    cmd = ["uv", "run", "main.py"]
-
-    # Logic thông minh: Có mới nới cũ
-    if new_files_count > 0:
-        print(f"\n📢 Phát hiện {new_files_count} note vừa được AI xử lý.")
-        user_choice = input("❓ Bạn có muốn REBUILD database để cập nhật ngay không? [Y/n]: ").strip().lower()
-
-        if user_choice in ["", "y", "yes"]:
-            print("⚡ Ok, thêm cờ --rebuild...")
-            cmd.append("--rebuild")
-
-    # Chuyển tiếp tham số (câu hỏi)
-    if len(sys.argv) > 1:
-        cmd.extend(sys.argv[1:])
-
-    print(f"▶️  Command: {' '.join(cmd)}")
-    print("-" * 40)
-
-    try:
-        subprocess.run(cmd, check=False)
-    except KeyboardInterrupt:
-        print("\n👋 Bye bro!")
+    # 4. Chạy Main RAG (Chat)
+    print_step("3/3", "Khởi động Polymath Chatbot...")
+    run_command(["python", str(MAIN_SCRIPT)], "RAG Chatbot")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n👋 Bye bro.")
