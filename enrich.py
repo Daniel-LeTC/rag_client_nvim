@@ -11,7 +11,7 @@ from langchain_ollama import ChatOllama
 
 # --- CẤU HÌNH ---
 DEFAULT_NOTE_PATH = "/home/daniel/Projects/mind_dump/"
-LLM_MODEL = "llama3.2:3b"
+LLM_MODEL = "llama3:8b"
 
 # --- REGEX PHÂN LOẠI FILE ---
 # Tên file kiểu 8 chữ số, ví dụ: 20251213.md (dành cho Daily Dump/Chaos)
