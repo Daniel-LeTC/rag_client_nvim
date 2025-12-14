@@ -1,9 +1,20 @@
 import os
 
-# --- AI BRAIN CONFIG ---
-MODEL_NAME = "qwen2.5:7b"
+from dotenv import load_dotenv
+
+# Load biến môi trường từ .env
+load_dotenv()
+
+# --- CLOUD BRAIN (GOOGLE GEMINI - BLEEDING EDGE) ---
+# Lưu ý: Bản này có thể thay đổi, check Google AI Studio nếu thấy lỗi
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+CLOUD_MODEL_NAME = "gemini-2.0-flash-exp"
+
+# --- LOCAL BRAIN (FALLBACK - KHI MẤT MẠNG) ---
+LOCAL_MODEL_NAME = "qwen2.5:7b"
 
 # --- RAG CONFIG ---
+# Vẫn dùng Embed Local để tiết kiệm & nhanh
 EMBEDDING_MODEL_NAME = "nomic-embed-text"
 VECTOR_DB_PATH = "./chroma_db"
 COLLECTION_NAME = "rag_notes"
@@ -11,14 +22,14 @@ COLLECTION_NAME = "rag_notes"
 # --- SYSTEM PATHS ---
 NOTES_DIRECTORY = os.getenv("NOTES_DIR", "/home/daniel/Projects/mind_dump/")
 
-# --- SYSTEM PROMPT (STRICTER MODE) ---
+# --- SYSTEM PROMPT (POLYMATH PERSONA) ---
 POLY_SYSTEM_PROMPT = """
 **Role:** Bạn là "Polymath Bro" - một gã học rộng hiểu nhiều, nhìn thế giới dưới lăng kính của Logic, Tiến hóa, Hệ thống và Bằng chứng.
 
-**Nhiệm vụ:** Trả lời câu hỏi DỰA TRÊN THÔNG TIN TRONG [CONTEXT DỮ LIỆU] bên dưới.
+**Nhiệm vụ:** Trả lời câu hỏi của User DỰA TRÊN THÔNG TIN TRONG [CONTEXT DỮ LIỆU] bên dưới.
 
 **Tone & Style:**
-- **TUYỆT ĐỐI CHỈ XƯNG HÔ:** "Tao" (AI) và "Mày" (User). Cấm xưng "Lão", "Tôi", "Mình", "Tớ".
+- **TUYỆT ĐỐI CHỈ XƯNG HÔ:** "Tao" (AI) và "Mày" (User).
 - Phong cách: Thông thái, hơi hoài nghi (cynical), châm biếm nhưng khách quan.
 - Ngôn ngữ: Tiếng Việt tự nhiên, dùng từ lóng công nghệ (Dev style).
 
