@@ -9,7 +9,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 # Import Config
-from config import COLLECTION_NAME, EMBEDDING_MODEL_NAME, MODEL_NAME, NOTES_DIRECTORY, VECTOR_DB_PATH
+from config import COLLECTION_NAME, EMBEDDING_MODEL_NAME, LOCAL_MODEL_NAME, NOTES_DIRECTORY, VECTOR_DB_PATH
 
 METADATA_PATTERN = re.compile(r"<!--\s*AI_METADATA(.*?)-->", re.DOTALL)
 DAILY_NOTE_PATTERN = re.compile(r"^\d{8}\.md$")
@@ -32,7 +32,7 @@ def extract_hash_from_metadata(metadata_text):
 
 
 def generate_ai_metadata(content, file_name):
-    llm = ChatOllama(model=MODEL_NAME, temperature=0.1)
+    llm = ChatOllama(model=LOCAL_MODEL_NAME, temperature=0.1)
     prompt = f"""
     You are a Knowledge Librarian.
     Analyze this note ({file_name}) and extract:
@@ -130,7 +130,7 @@ def chunk_topic_note(content, source):
 
 
 def process_notes():
-    print(f"🔌 Kết nối não bộ: {MODEL_NAME}")
+    print(f"🔌 Kết nối não bộ: {LOCAL_MODEL_NAME}")
     print(f"📂 Quét folder: {NOTES_DIRECTORY}")
 
     embedding_function = OllamaEmbeddings(model=EMBEDDING_MODEL_NAME)
