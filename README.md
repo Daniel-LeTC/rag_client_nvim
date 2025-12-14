@@ -1,79 +1,118 @@
-🧠 Polymath Second Brain - Local RAG Setup
+# **Polymath Second Brain (RAG CLI)**
 
-Hệ thống Second Brain chạy local 100%, sử dụng Neovim để ghi chú và AI để tìm kiếm/tổng hợp thông tin.
+A robust, hybrid Retrieval-Augmented Generation (RAG) system designed for managing a "Second Brain" knowledge base. It combines the speed and cost-effectiveness of local embeddings with the reasoning power of Cloud AI (Google Gemini), featuring an automatic fallback to local LLMs (Qwen/Llama) for resilience.
 
-🛠️ Yêu cầu hệ thống (Prerequisites)
+This system implements a "Systematic Chaos" philosophy for note-taking, allowing users to dump information freely while maintaining structured retrieval through intelligent chunking and metadata enrichment.
 
-OS: Linux (Fedora/Ubuntu/Arch...) hoặc WSL2.
+## **Core Architecture**
 
-GPU: NVIDIA RTX 3060 (6GB VRAM) trở lên là mượt.
+* **Hybrid Brain:**  
+  * **Primary:** Google Gemini x.y (Cloud API) for high-reasoning tasks and large context understanding.  
+  * **Fallback:** Qwen 2.5 7B (Local via Ollama) automatically activates if the cloud service is unreachable or rate-limited.  
+* **Local Embeddings:** Uses local embedding models (e.g., maixb-embed-text or nomic-embed-text) via Ollama for fast, free, and private vectorization.  
+* **Vector Database:** ChromaDB for persistent vector storage and retrieval.  
+* **Reranker:** Integrated BAAI/bge-reranker (Cross-Encoder) to refine search results and improve relevance before feeding them to the LLM.  
+* **Enrichment Pipeline:** An automated script (enrich.py) that scans Markdown notes, generates summaries/keywords using AI, and injects metadata directly into the files for better indexing.
 
-Python: 3.10+ (Khuyên dùng uv để quản lý package).
+## **Features**
 
-🦙 1. Cài đặt Ollama (AI Engine)
+### **Systematic Chaos Management**
 
-Chạy lệnh sau để cài đặt (Script chính chủ của Ollama):
+The system handles two distinct types of notes with specialized chunking strategies:
 
-curl -fsSL [https://ollama.com/install.sh](https://ollama.com/install.sh) | sh
+1. **Daily Logs (YYYYMMDD.md):** Uses Header-based splitting (\#, \#\#) to isolate distinct topics within a single daily dump file.  
+2. **Topic Notes:** Uses recursive character splitting for deep-dive technical documents or long-form essays.
 
+### **Contextual Injection**
 
-Quản lý Service (Systemd)
+To prevent semantic confusion in vector space, the enricher injects context into every text chunk:
 
-Sau khi cài xong, đảm bảo Ollama chạy ngầm cùng hệ thống:
+* **Daily Logs:** Injects the specific Header/Topic path (e.g., DAILY LOG: 20251212 \> TOPIC: Biohacks).  
+* **Topic Notes:** Injects global file summaries and keywords.
 
-# Khởi động service
-sudo systemctl start ollama
+### **Operational Security**
 
-# Bật tự động chạy khi mở máy
-sudo systemctl enable ollama
+* API keys are managed via .env files and never hardcoded.  
+* Local fallback ensures the system remains functional offline.
 
+## **Prerequisites**
 
-Check trạng thái: systemctl status ollama
+* **Python 3.10+**  
+* **uv** (Fast Python package installer and resolver)  
+* **Ollama** running locally with the following models pulled:  
+  * qwen2.5:7b (or your preferred local LLM)  
+  * Embedding model (default is nomic-embed-text, configurable in config.py)
 
-📥 2. Tải Models (The Brains)
+## **Installation**
 
-Chúng ta cần 2 model: một cái để Nghĩ (LLM) và một cái để Nhìn (Embedding).
+1. **Clone the repository:**  
+   ```
+   git clone [https://github.com/Daniel-LeTC/rag_client_nvim.git](https://github.com/Daniel-LeTC/rag_client_nvim.git)  
+   cd rag_client_nvim
+   ```
 
-A. LLM Model: Qwen 2.5 7B
+2. **Install dependencies using uv:**  
+   uv sync
 
-Lý do: Nhỏ, nhẹ, nhanh, context window lớn (128k), chạy mượt trên Laptop GPU 6GB mà không làm nóng máy.
+3. Configure Environment Variables:  
+   Create a .env file in the root directory:  
+   touch .env
 
-ollama pull qwen2.5:7b
+   Add your Google Gemini API key:  
+   ```
+   GOOGLE_API_KEY=your_actual_api_key_here  
+   # Optional: Override default note directory  
+   # NOTES_DIR=/path/to/your/vault
+   ```
 
+4. Verify Configuration:  
+   Check config.py to ensure `EMBEDDING_MODEL_NAME` matches your installed Ollama embedding model (e.g., change to nomic-embed if needed).
 
-B. Embedding Model: mxbai-embed-large
+## **Usage**
 
-Lý do: Tốt nhất trong tầm giá cho RAG. Hỗ trợ đa ngôn ngữ tốt hơn nomic, hiểu ngữ nghĩa sâu hơn. Dimension 1024.
+### **1. Data Ingestion & Enrichment**
 
-ollama pull mxbai-embed-large
+Run the smart runner to scan your notes, generate metadata, and build the vector database. This script handles both enrichment (first run) and incremental updates (subsequent runs based on file hash).
 
-
-🚀 3. Cài đặt Python Dependencies
-
-Dự án này dùng uv cho sạch sẽ và nhanh.
-
-# 1. Cài uv (nếu chưa có)
-curl -LsSf [https://astral.sh/uv/install.sh](https://astral.sh/uv/install.sh) | sh
-
-# 2. Sync thư viện
-uv sync
-
-
-🎮 4. Sử dụng
-
-Chạy thủ công (Terminal):
-
-# Chat tự động (tự check file mới, tự bơm metadata, tự git push)
+```
 uv run smart_run.py
+```
 
-# Chat với câu hỏi cụ thể
-uv run smart_run.py "ghi chú hỗn loạn là gì?"
+*Note: The first run may take time as it generates summaries for all notes.*
 
+### **2. Chat Interface**
 
-Chạy trong Neovim (lưu ý, phải có config nvim và file rag_client.lua):
+The `smart_run.py` script automatically launches the chat interface after ingestion. You can also run it manually:
 
-:Ask <câu hỏi>: Mở cửa sổ chat Floating Window.
+```
+uv run main.py
+```
 
-:Enrich: Chạy tool bơm Metadata thủ công.
+### **3. Resetting the Database**
 
-:MathPreview: Mở trình duyệt để xem file Markdown đã render (xem ảnh, latex và code block)
+If you change chunking logic or want a fresh start:
+
+1. Clean metadata from markdown files:  
+   `uv run clean_metadata.py`
+
+2. Delete the vector database:  
+   `rm -rf chroma_db`
+
+3. Re-run ingestion:  
+   `uv run smart_run.py`
+
+## **Project Structure**
+
+* smart_run.py: The orchestrator script. Handles enrichment, git backup (optional), and launching the chat.  
+* enrich.py: The data pipeline. Reads Markdown, generates metadata using local AI, chunks text, and loads it into ChromaDB.  
+* main.py: The RAG chat interface. Handles retrieval, reranking, and LLM generation (Cloud/Local hybrid).  
+* config.py: Centralized configuration for models, paths, and system prompts.  
+* clean_metadata.py: Utility to strip AI-generated metadata from source files.
+
+For using in neovim (warning in nvim config nvim you have to use rag_client.lua):
+
+:Ask: Open chat Floating Window.
+
+:Enrich: inject manually Metadata.
+
+:MathPreview: open browser for rendered Markdown (images, latex and code blocks)
